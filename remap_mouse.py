@@ -141,13 +141,15 @@ def log(msg: str) -> None:
 
 
 def set_mouse_on(on: bool) -> None:
-    global _mouse_on, _vel_x, _vel_y, _acc_x, _acc_y
+    global _mouse_on, _vel_x, _vel_y, _acc_x, _acc_y, _delete_held, _delete_used_as_mod
     if _mouse_on == on:
         return
     _mouse_on = on
     if not on:
         _vel_x = _vel_y = _acc_x = _acc_y = 0.0
-    log(f"mouse remap {'ON' if on else 'OFF (volume)'}")
+        _delete_held = False
+        _delete_used_as_mod = False
+    log(f"mouse remap {'ON' if on else 'OFF (volume + normal keys)'}")
 
 
 def ctrl_held() -> bool:
@@ -292,6 +294,21 @@ def handle_key(vk: int, is_down: bool, injected: bool = False) -> bool:
     if vk == VK_DELETE and injected:
         return False
 
+    # Knob click always toggles ALL remaps (move + scroll + mouse buttons)
+    if vk == VK_VOLUME_MUTE:
+        if is_down:
+            now = time.perf_counter()
+            with _lock:
+                if (now - _last_mute_t) * 1000.0 < MUTE_DEDUPE_MS:
+                    return True
+                _last_mute_t = now
+                set_mouse_on(not _mouse_on)
+        return True
+
+    # When remap is OFF: do not intercept anything else (normal keyboard)
+    if not _mouse_on:
+        return False
+
     # Ctrl + Page Up -> RMB; Ctrl + Delete -> LMB
     if vk == VK_PRIOR and ctrl_held():
         if is_down:
@@ -316,20 +333,7 @@ def handle_key(vk: int, is_down: bool, injected: bool = False) -> bool:
                 tap_delete()
         return True
 
-    if vk == VK_VOLUME_MUTE:
-        if is_down:
-            now = time.perf_counter()
-            with _lock:
-                if (now - _last_mute_t) * 1000.0 < MUTE_DEDUPE_MS:
-                    return True
-                _last_mute_t = now
-                set_mouse_on(not _mouse_on)
-        return True
-
     if vk not in (VK_VOLUME_UP, VK_VOLUME_DOWN):
-        return False
-
-    if not _mouse_on:
         return False
 
     if not is_down:

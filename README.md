@@ -11,7 +11,7 @@ Tested with Bluetooth keyboards that send `Volume Up` / `Volume Down` / `Volume 
 | Turn knob | Move mouse **X** |
 | **Ctrl** + turn | Move mouse **Y** |
 | **Delete** + turn | Mouse **wheel** scroll |
-| Click knob (Mute) | Toggle remap ON/OFF (OFF = normal volume) |
+| Click knob (Mute) | Toggle **all** remaps ON/OFF (OFF = normal volume + normal Del/PgUp) |
 | **Ctrl** + **Delete** | Left click (without Ctrl chord) |
 | **Ctrl** + **Page Up** | Right click (without Ctrl chord) |
 | **Ctrl** + **Alt** + **Q** | Quit |
