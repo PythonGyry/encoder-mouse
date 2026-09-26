@@ -17,6 +17,7 @@ import atexit
 import ctypes
 import ctypes.wintypes as w
 import math
+import os
 import sys
 import threading
 import time
@@ -35,10 +36,11 @@ FRICTION = 6.5
 MAX_SPEED = 1400.0
 TICK_HZ = 180
 DEDUPE_MS = 12
-MUTE_DEDUPE_MS = 80
 WHEEL_DELTA = 120
 
 LOG = Path(__file__).with_name("remap.log")
+PID_FILE = Path(__file__).with_name("remap.pid")
+MUTEX_NAME = "Global\\PythonGyryEncoderMouseRemap"
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 
@@ -125,9 +127,10 @@ _last_tick_t = 0.0
 _last_vk = 0
 _last_vk_t = 0.0
 _mouse_on = True
-_last_mute_t = 0.0
+_mute_held = False  # edge-trigger: one toggle per physical press
 _delete_held = False
 _delete_used_as_mod = False
+_mutex = None
 
 
 def log(msg: str) -> None:
@@ -150,6 +153,40 @@ def set_mouse_on(on: bool) -> None:
         _delete_held = False
         _delete_used_as_mod = False
     log(f"mouse remap {'ON' if on else 'OFF (volume + normal keys)'}")
+    # Audible feedback so toggle is obvious
+    try:
+        user32.MessageBeep(0x00000040 if on else 0x00000010)
+    except Exception:
+        pass
+
+
+def ensure_single_instance() -> bool:
+    """Kill previous instance (via pid file), then take a mutex."""
+    global _mutex
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, w.BOOL, w.LPCWSTR]
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+
+    if PID_FILE.exists():
+        try:
+            old = int(PID_FILE.read_text(encoding="utf-8").strip())
+            if old and old != os.getpid():
+                try:
+                    os.kill(old, 9)
+                    log(f"killed previous instance pid={old}")
+                    time.sleep(0.3)
+                except OSError:
+                    pass
+        except ValueError:
+            pass
+
+    _mutex = kernel32.CreateMutexW(None, False, MUTEX_NAME)
+    already = ctypes.get_last_error() == 183  # ERROR_ALREADY_EXISTS
+    if already:
+        log("another instance still holds mutex — exit")
+        return False
+    PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
+    return True
 
 
 def ctrl_held() -> bool:
@@ -288,21 +325,20 @@ def motion_loop() -> None:
 
 def handle_key(vk: int, is_down: bool, injected: bool = False) -> bool:
     """True = swallow event."""
-    global _last_vk, _last_vk_t, _last_mute_t, _delete_held, _delete_used_as_mod
+    global _last_vk, _last_vk_t, _mute_held, _delete_held, _delete_used_as_mod
 
     # Let our injected Delete through for "tap = real delete"
     if vk == VK_DELETE and injected:
         return False
 
-    # Knob click always toggles ALL remaps (move + scroll + mouse buttons)
+    # Knob click: exactly one toggle per physical press (ignore BLE double-DOWN)
     if vk == VK_VOLUME_MUTE:
         if is_down:
-            now = time.perf_counter()
-            with _lock:
-                if (now - _last_mute_t) * 1000.0 < MUTE_DEDUPE_MS:
-                    return True
-                _last_mute_t = now
+            if not _mute_held:
+                _mute_held = True
                 set_mouse_on(not _mouse_on)
+        else:
+            _mute_held = False
         return True
 
     # When remap is OFF: do not intercept anything else (normal keyboard)
@@ -372,19 +408,27 @@ def keyboard_proc(nCode, wParam, lParam):
 
 
 def cleanup() -> None:
-    global _h_kb, _delete_held
+    global _h_kb, _delete_held, _mute_held
     _stop.set()
     _delete_held = False
+    _mute_held = False
     set_mouse_on(True)
     if _h_kb:
         user32.UnhookWindowsHookEx(_h_kb)
         _h_kb = HHOOK()
         log("hook removed")
+    try:
+        if PID_FILE.exists() and PID_FILE.read_text(encoding="utf-8").strip() == str(os.getpid()):
+            PID_FILE.unlink()
+    except OSError:
+        pass
 
 
 def main() -> int:
     global _h_kb, _cb_ref, _thread_id
     LOG.write_text("", encoding="utf-8")
+    if not ensure_single_instance():
+        return 1
     _thread_id = ctypes.windll.kernel32.GetCurrentThreadId()
 
     log(
